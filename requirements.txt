@@ -1,8 +1,9 @@
 pandas
 numpy
-scikit-learn
+scikit-learn==1.6.1 # or your exact version
 imbalanced-learn
 streamlit
 joblib
 matplotlib
 seaborn
+ipython
