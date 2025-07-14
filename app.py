@@ -15,6 +15,8 @@ import pandas as pd
 import numpy as np
 import shap # Import the SHAP library
 import matplotlib.pyplot as plt # Needed for displaying SHAP plots in Streamlit
+# import streamlit.components.v1 as components # Not needed for Matplotlib plots
+# import tempfile # Not needed for Matplotlib plots
 
 # --- Streamlit Page Configuration (Must be the first Streamlit command) ---
 st.set_page_config(
@@ -23,6 +25,9 @@ st.set_page_config(
     layout="wide", # Use a wide layout
     initial_sidebar_state="expanded" # Sidebar expanded by default
 )
+
+# shap.initjs() is not strictly needed for static matplotlib plots, but good practice if any interactive elements persist
+# shap.initjs()
 
 # --- Define Paths ---
 model_dir = 'trained_models'
@@ -63,12 +68,11 @@ model, scaler, background_data_for_shap = load_ml_assets()
 def get_job_options():
     try:
         original_application_df_path = os.path.join('Dataset', 'application.csv')
-        original_application_df = pd.read_csv(original_application_df_path)
-        # Add 'Unknown' and sort for consistent order
+        # FIX: Added encoding='utf-8' to handle potential charmap errors
+        original_application_df = pd.read_csv(original_application_df_path, encoding='utf-8')
         return ['Unknown'] + sorted(original_application_df['job'].dropna().unique().tolist())
     except FileNotFoundError:
         st.warning(f"Could not load original 'application.csv' from {original_application_df_path} for job types. Using fallback.")
-        # Fallback list if file is not found (for robustness during deployment issues)
         return ['Unknown', 'Sales staff', 'Core staff', 'Managers', 'Laborers', 'Drivers', 'Accountants', 'High skill tech staff', 'Medicine staff', 'Security staff', 'Cooking staff', 'Cleaning staff', 'Private service staff', 'Secretaries', 'Low-skill Laborers', 'Waiters/barmen staff', 'HR staff', 'Realty agents', 'IT staff']
 
 job_options = get_job_options()
@@ -80,11 +84,35 @@ st.markdown("""
     along with an explanation of the factors influencing the decision.
 """)
 
+# --- Sidebar for Navigation/Info ---
+with st.sidebar:
+    st.header("About This App")
+    st.markdown("""
+    This application predicts credit card approval status using a machine learning model trained on historical applicant data.
+    It demonstrates a full ML pipeline from data preprocessing to model deployment and interpretability.
+
+    **Key Steps:**
+    - Data Preprocessing & Feature Engineering
+    - Handling Imbalanced Data (SMOTE)
+    - Logistic Regression Model Training
+    - Hyperparameter Optimization (GridSearchCV)
+    - Model Interpretability (SHAP)
+    """)
+    st.header("How It Works")
+    st.markdown("""
+    1.  **Input:** Enter applicant details on the main page.
+    2.  **Processing:** Your input is preprocessed (encoded & scaled) matching the model's training data.
+    3.  **Prediction:** The trained model predicts approval probability.
+    4.  **Explanation:** SHAP values explain individual feature contributions to the prediction.
+    """)
+    st.header("Connect with Me")
+    st.write("[GitHub](https://github.com/isranii/Credit-Card-Approval-Streamlit-App)") # Link to your GitHub repo
+    st.write("[LinkedIn](https://www.linkedin.com/in/jahnaviisrani/)") # Link to your LinkedIn
+
 # --- Main Content Area ---
 st.header("Applicant Information")
 st.write("Please fill in the details accurately to get the most precise prediction.")
 
-# Using columns for a nicer layout
 col1, col2 = st.columns(2)
 
 with col1:
@@ -118,7 +146,7 @@ with col2:
                                    4: '(4) 120-149 Days Overdue',
                                    5: '(5) 150+ Days Overdue'
                                }.get(x, str(x)), # Display user-friendly text
-                               index=4, # Default to 0 days overdue (index of 0 in options)
+                               index=4, # Default to 0 days overdue (index 4 corresponds to value 2)
                                help="Represents the worst observed credit status from historical records. Higher values indicate more severe delinquency."
                                )
 
@@ -126,7 +154,6 @@ with col2:
 if st.button("🚀 Predict Approval", type="primary"):
     st.subheader("📊 Prediction Results:")
 
-    # Use a spinner for better user experience during processing
     with st.spinner("Analyzing applicant data and generating prediction..."):
         # --- 4. Convert User Inputs to Model-Expected Format ---
         own_car_val = "Y" if own_car == "Yes" else "N"
@@ -147,10 +174,8 @@ if st.button("🚀 Predict Approval", type="primary"):
         input_df_raw = pd.DataFrame([user_data])
 
         # --- 5. Preprocessing User Input (MUST match training preprocessing) ---
-        # Apply one-hot encoding
         processed_input_df = pd.get_dummies(input_df_raw, columns=ORIGINAL_CATEGORICAL_COLS, drop_first=True)
 
-        # Align columns to match the exact order and presence of training data (FINAL_TRAINED_FEATURES)
         final_input_for_prediction = pd.DataFrame(columns=FINAL_TRAINED_FEATURES)
         for col in FINAL_TRAINED_FEATURES:
             if col in processed_input_df.columns:
@@ -158,7 +183,6 @@ if st.button("🚀 Predict Approval", type="primary"):
             else:
                 final_input_for_prediction[col] = 0
 
-        # Ensure all numerical columns are of numeric type for scaling
         all_numerical_cols_in_final_features = [
             'num_child', 'income', 'birth_day', 'employment_length', 'mobile',
             'work_phone', 'phone', 'email', 'CNT_FAM_MEMBERS', 'max_status'
@@ -169,7 +193,6 @@ if st.button("🚀 Predict Approval", type="primary"):
 
         final_input_for_prediction = final_input_for_prediction.fillna(0)
 
-        # Apply Feature Scaling
         final_input_for_prediction[NUMERICAL_COLS_TO_SCALE] = scaler.transform(final_input_for_prediction[NUMERICAL_COLS_TO_SCALE])
 
         # --- 6. Make Prediction ---
@@ -192,43 +215,46 @@ if st.button("🚀 Predict Approval", type="primary"):
     st.markdown("The SHAP force plot below illustrates how each feature contributes to the prediction. Features in **red** push the prediction higher (towards Approval), while features in **blue** push it lower (towards Rejection).")
 
     try:
-        # Initialize SHAP explainer with the loaded background data
-        explainer = shap.KernelExplainer(model.predict_proba, background_data_for_shap)
+        # For Logistic Regression, LinearExplainer is more robust.
+        explainer = shap.LinearExplainer(model, background_data_for_shap)
 
-        # Calculate SHAP values for the current input
-        # Ensure the input is passed as a DataFrame row for SHAP.
-        shap_values = explainer.shap_values(final_input_for_prediction.iloc[0])
+        # Calculate SHAP values for the current input (ensure it's a 2D array/DataFrame for SHAP)
+        raw_shap_values_linear = explainer.shap_values(final_input_for_prediction)
 
-        # Get SHAP values for the 'Approved' class (class 1)
-        shap_values_class_1 = shap_values[1]
+        # Extract SHAP values for the single sample (first row) for the plot
+        # This will be a 1D NumPy array of SHAP values.
+        shap_values_for_plot = raw_shap_values_linear[0]
 
-        # Get the expected value for class 1 (average model output)
-        expected_value_class_1 = explainer.expected_value[1]
+        # For LinearExplainer, expected_value is typically a single scalar.
+        expected_value_for_plot = explainer.expected_value
 
-        shap.initjs() # Initialize JavaScript for SHAP plots (important for rendering)
+        # Create the waterfall plot (Matplotlib based)
+        # This is very reliable for display in Streamlit using st.pyplot()
+        fig, ax = plt.subplots(figsize=(10, 6)) # Create a Matplotlib figure
 
-        # Create the force plot HTML
-        shap_html = shap.force_plot(
-            expected_value_class_1,
-            shap_values_class_1,
-            final_input_for_prediction.iloc[0], # The feature values for the single input
-            feature_names=FINAL_TRAINED_FEATURES # Use your defined list of feature names
+        # Create a SHAP Explanation object needed for waterfall plot
+        shap_explanation = shap.Explanation(
+            values=shap_values_for_plot,
+            base_values=expected_value_for_plot,
+            data=final_input_for_prediction.iloc[0].values, # Use .values for numpy array
+            feature_names=FINAL_TRAINED_FEATURES
         )
 
-        # Display in an expander for cleaner UI, allowing users to show/hide it
-        with st.expander("✨ Click to view detailed Feature Contributions (SHAP Force Plot)", expanded=True):
-            # Using st.components.v1.html to embed the plot, ensure scrolling is enabled
-            st.components.v1.html(shap.get_html(shap_html), width=900, height=350, scrolling=True)
-            st.markdown("""
-            **How to read the SHAP Force Plot:**
-            - **Base Value (f(x) on the plot):** This is the average model output (probability of approval) if no features were considered.
-            - **Red values** on the right push the prediction **higher** (towards Approval).
-            - **Blue values** on the left push the prediction **lower** (towards Rejection).
-            - Each feature's position indicates its impact on pushing the prediction from the base value to the final output value.
+        # Plot the waterfall plot
+        shap.plots.waterfall(shap_explanation, show=False) # show=False prevents immediate display
+        st.pyplot(fig, clear_figure=True) # Display the Matplotlib figure in Streamlit
+
+        st.markdown("""
+            **How to read the SHAP Waterfall Plot:**
+            - The **Base Value (E[f(X)])** is the average model output (probability of approval).
+            - Each bar shows how a feature's value pushes the prediction from the base value to the final output.
+            - **Positive (red) bars** push the prediction **higher** (towards Approval).
+            - **Negative (blue) bars** push the prediction **lower** (towards Rejection).
+            - The **f(x)** at the top is the final model output for this specific prediction.
             """)
     except Exception as e:
-        st.error(f"Could not generate SHAP explanation. Error: {e}")
-        st.warning("SHAP explanations might not work perfectly with all model types or specific input values.")
+        st.error(f"Could not generate SHAP explanation. Please try again or adjust inputs. Error: {e}")
+        st.warning("SHAP explanations can sometimes be sensitive to specific input values or model types. If the plot does not appear, check your inputs or the model's behavior for edge cases.")
 
 
 # --- Professional Footer ---
