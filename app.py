@@ -15,8 +15,6 @@ import pandas as pd
 import numpy as np
 import shap # Import the SHAP library
 import matplotlib.pyplot as plt # Needed for displaying SHAP plots in Streamlit
-# import streamlit.components.v1 as components # Not needed for Matplotlib plots
-# import tempfile # Not needed for Matplotlib plots
 
 # --- Streamlit Page Configuration (Must be the first Streamlit command) ---
 st.set_page_config(
@@ -25,9 +23,6 @@ st.set_page_config(
     layout="wide", # Use a wide layout
     initial_sidebar_state="expanded" # Sidebar expanded by default
 )
-
-# shap.initjs() is not strictly needed for static matplotlib plots, but good practice if any interactive elements persist
-# shap.initjs()
 
 # --- Define Paths ---
 model_dir = 'trained_models'
@@ -66,14 +61,27 @@ model, scaler, background_data_for_shap = load_ml_assets()
 # --- Cache job options for faster loading ---
 @st.cache_data
 def get_job_options():
-    try:
-        original_application_df_path = os.path.join('Dataset', 'application.csv')
-        # FIX: Added encoding='utf-8' to handle potential charmap errors
-        original_application_df = pd.read_csv(original_application_df_path, encoding='utf-8')
-        return ['Unknown'] + sorted(original_application_df['job'].dropna().unique().tolist())
-    except FileNotFoundError:
-        st.warning(f"Could not load original 'application.csv' from {original_application_df_path} for job types. Using fallback.")
-        return ['Unknown', 'Sales staff', 'Core staff', 'Managers', 'Laborers', 'Drivers', 'Accountants', 'High skill tech staff', 'Medicine staff', 'Security staff', 'Cooking staff', 'Cleaning staff', 'Private service staff', 'Secretaries', 'Low-skill Laborers', 'Waiters/barmen staff', 'HR staff', 'Realty agents', 'IT staff']
+    # Adding a more comprehensive list of professions based on common categories,
+    # and retaining the 'Unknown' option.
+    # This list is an expansion to provide more detailed options for the user.
+    return sorted([
+        'Accountants', 'Architects', 'Artists', 'Athletes', 'Business Owners',
+        'Cleaning staff', 'Construction workers', 'Consultants', 'Cooking staff',
+        'Core staff', 'Customer Service', 'Data Scientists', 'Dentists',
+        'Doctors', 'Drivers', 'Engineers', 'Farmers', 'Financial Analysts',
+        'Firefighters', 'Government Officials', 'Graphic Designers', 'HR staff',
+        'Healthcare Workers', 'High skill tech staff', 'Hospitality Staff',
+        'IT staff', 'Journalists', 'Laborers', 'Lawyers', 'Librarians',
+        'Low-skill Laborers', 'Managers', 'Marketing Professionals',
+        'Medicine staff', 'Musicians', 'Nurses', 'Office Workers',
+        'Pensioner (Retired)', 'Pharmacists', 'Photographers', 'Pilots',
+        'Police Officers', 'Private service staff', 'Professors',
+        'Programmers', 'Realty agents', 'Researchers', 'Retail Workers',
+        'Sales staff', 'Scientists', 'Secretaries', 'Security staff',
+        'Self-employed', 'Social Workers', 'Software Developers',
+        'State servant', 'Students', 'Teachers', 'Technicians',
+        'Tradespeople', 'Unknown', 'Waiters/barmen staff', 'Writers', 'Other' # Added 'Other'
+    ])
 
 job_options = get_job_options()
 
@@ -120,7 +128,8 @@ with col1:
     own_car = st.selectbox("🚗 Own Car", ["Yes", "No"], help="Does the applicant own a car?")
     own_realty = st.selectbox("🏠 Own Realty", ["Yes", "No"], help="Does the applicant own any real estate?")
     num_child = st.number_input("🧒 Number of Children", min_value=0, max_value=20, value=0, help="Total number of children the applicant has.")
-    income = st.number_input("💰 Annual Income (USD)", min_value=0.0, value=30000.0, step=1000.0, format="%.2f", help="Applicant's total declared annual income in US Dollars.")
+    # Changed currency label from USD to Rupees
+    income = st.number_input("💰 Annual Income (Rupees)", min_value=0.0, value=500000.0, step=10000.0, format="%.2f", help="Applicant's total declared annual income in Indian Rupees.")
     income_type = st.selectbox("💸 Income Type", ["Working", "Commercial associate", "Pensioner", "State servant", "Student"], help="Primary source of the applicant's income.")
     CNT_FAM_MEMBERS = st.number_input("👨‍👩‍👧‍👦 Number of Family Members", min_value=1, max_value=20, value=2, help="Total number of family members.")
 
@@ -128,12 +137,9 @@ with col2:
     education_level = st.selectbox("🎓 Education Level", ["Higher education", "Secondary / secondary special", "Incomplete higher", "Lower secondary", "Academic degree"], help="Applicant's highest attained education level.")
     family_status = st.selectbox("❤️ Family Status", ["Married", "Single / not married", "Civil marriage", "Separated", "Widow"], help="Applicant's marital or family status.")
     house_type = st.selectbox("🏡 House / Apartment Type", ["House / apartment", "Rented apartment", "Municipal apartment", "With parents", "Co-op apartment", "Office apartment"], help="Type of housing the applicant resides in.")
-
     age_in_years = st.number_input("🎂 Age in Years", min_value=18, max_value=100, value=35, help="Applicant's current age in years.")
     years_employed = st.number_input("💼 Years Employed", min_value=0, max_value=50, value=5, help="Total number of years the applicant has been employed. Enter 0 if unemployed.")
-
     job = st.selectbox("🧑‍💻 Job Type", job_options, help="Applicant's current occupation. 'Unknown' if not specified.")
-
     max_status = st.selectbox("📈 Max Credit Status (from history)",
                                options=list(range(-2, 6)), # Options from -2 to 5
                                format_func=lambda x: {
@@ -153,14 +159,33 @@ with col2:
 # Add a button to make prediction
 if st.button("🚀 Predict Approval", type="primary"):
     st.subheader("📊 Prediction Results:")
-
     with st.spinner("Analyzing applicant data and generating prediction..."):
+        # --- Pre-check for low income/high delinquency before model prediction ---
+        # This acts as an initial filter based on business rules
+        if income <= 0: # Ensure income is strictly greater than 0 for approval
+            st.error(f"**Prediction: Rejected.** ❌")
+            st.warning("Decision based on: **Income cannot be 0 Rupees.** Credit approval requires a verifiable income source.")
+            st.stop() # Stop further execution
+
+        # Adding more robust logic for rejection based on a combination of income and credit status
+        # This is a heuristic to prevent approval for very low income or severe delinquency,
+        # irrespective of what the ML model *might* predict based purely on patterns.
+        if income < 100000.0 and max_status >= 2: # Example: If income is very low AND significant delinquency
+            st.error(f"**Prediction: Rejected.** ❌")
+            st.warning("Decision based on: **Low Annual Income combined with significant credit delinquency.**")
+            st.stop()
+
+        if income < 50000.0: # Another example: Extremely low income as an absolute rejection
+             st.error(f"**Prediction: Rejected.** ❌")
+             st.warning("Decision based on: **Annual Income is too low.** A minimum income threshold is required.")
+             st.stop()
+
+
         # --- 4. Convert User Inputs to Model-Expected Format ---
         own_car_val = "Y" if own_car == "Yes" else "N"
         own_realty_val = "Y" if own_realty == "Yes" else "N"
         birth_day_val = -int(age_in_years * 365.25)
         employment_length_val = -int(years_employed * 365.25)
-
         user_data = {
             'num_child': num_child, 'income': income, 'birth_day': birth_day_val,
             'employment_length': employment_length_val, 'mobile': 0, 'work_phone': 0,
@@ -170,7 +195,6 @@ if st.button("🚀 Predict Approval", type="primary"):
             'education_level': education_level, 'family_status': family_status,
             'house_type': house_type, 'job': job
         }
-
         input_df_raw = pd.DataFrame([user_data])
 
         # --- 5. Preprocessing User Input (MUST match training preprocessing) ---
@@ -187,10 +211,10 @@ if st.button("🚀 Predict Approval", type="primary"):
             'num_child', 'income', 'birth_day', 'employment_length', 'mobile',
             'work_phone', 'phone', 'email', 'CNT_FAM_MEMBERS', 'max_status'
         ]
+
         for col in all_numerical_cols_in_final_features:
             if col in final_input_for_prediction.columns:
                 final_input_for_prediction[col] = pd.to_numeric(final_input_for_prediction[col], errors='coerce')
-
         final_input_for_prediction = final_input_for_prediction.fillna(0)
 
         final_input_for_prediction[NUMERICAL_COLS_TO_SCALE] = scaler.transform(final_input_for_prediction[NUMERICAL_COLS_TO_SCALE])
@@ -205,19 +229,15 @@ if st.button("🚀 Predict Approval", type="primary"):
         st.balloons() # Add balloons for success!
     else:
         st.error(f"**Prediction: Rejected.** ❌")
-
     st.markdown(f"**Probability of Approval:** `{prediction_proba[0]:.2f}`")
-
     st.info("💡 *Remember: This prediction is based on the trained model. Real-world credit decisions involve additional factors and human oversight.*")
 
     # --- 8. SHAP Interpretability ---
     st.subheader("🧐 Why this prediction? (Feature Contributions)")
     st.markdown("The SHAP force plot below illustrates how each feature contributes to the prediction. Features in **red** push the prediction higher (towards Approval), while features in **blue** push it lower (towards Rejection).")
-
     try:
         # For Logistic Regression, LinearExplainer is more robust.
         explainer = shap.LinearExplainer(model, background_data_for_shap)
-
         # Calculate SHAP values for the current input (ensure it's a 2D array/DataFrame for SHAP)
         raw_shap_values_linear = explainer.shap_values(final_input_for_prediction)
 
@@ -243,7 +263,6 @@ if st.button("🚀 Predict Approval", type="primary"):
         # Plot the waterfall plot
         shap.plots.waterfall(shap_explanation, show=False) # show=False prevents immediate display
         st.pyplot(fig, clear_figure=True) # Display the Matplotlib figure in Streamlit
-
         st.markdown("""
             **How to read the SHAP Waterfall Plot:**
             - The **Base Value (E[f(X)])** is the average model output (probability of approval).
@@ -255,7 +274,6 @@ if st.button("🚀 Predict Approval", type="primary"):
     except Exception as e:
         st.error(f"Could not generate SHAP explanation. Please try again or adjust inputs. Error: {e}")
         st.warning("SHAP explanations can sometimes be sensitive to specific input values or model types. If the plot does not appear, check your inputs or the model's behavior for edge cases.")
-
 
 # --- Professional Footer ---
 st.markdown("---")
